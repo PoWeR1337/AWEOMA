@@ -1,0 +1,51 @@
+# Opencloud – Docker Compose
+# Starten: docker compose up -d
+# Erfordert: .env Datei (siehe .env.example)
+
+version: "3.8"
+
+networks:
+  proxy:
+    external: true
+  opencloud_internal:
+    driver: bridge
+
+volumes:
+  opencloud_data:
+  opencloud_config:
+
+services:
+
+  opencloud:
+    image: opencloudeu/opencloud:latest
+    container_name: opencloud
+    restart: unless-stopped
+    environment:
+      # Domain
+      - OC_URL=https://${OPENCLOUD_DOMAIN}
+      # Admin Passwort (beim ersten Start)
+      - IDM_ADMIN_PASSWORD=${OPENCLOUD_ADMIN_PASSWORD}
+      # Interne Services
+      - PROXY_TLS=false
+      - GATEWAY_GRPC_ADDR=0.0.0.0:9142
+      - STORAGE_USERS_DRIVER=decomposed
+      - STORAGE_USERS_DECOMPOSEDFS_PROPAGATOR=async
+    volumes:
+      - opencloud_data:/var/lib/opencloud
+      - opencloud_config:/etc/opencloud
+    networks:
+      - proxy
+      - opencloud_internal
+    labels:
+      # Traefik Labels
+      - "traefik.enable=true"
+      - "traefik.http.routers.opencloud.rule=Host(`${OPENCLOUD_DOMAIN}`)"
+      - "traefik.http.routers.opencloud.entrypoints=websecure"
+      - "traefik.http.routers.opencloud.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.opencloud.middlewares=secure-headers@file"
+      - "traefik.http.services.opencloud.loadbalancer.server.port=9200"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
