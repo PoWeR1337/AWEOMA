@@ -1,0 +1,42 @@
+# Fail2ban – Jail Konfiguration
+# Kopiere nach /etc/fail2ban/jail.local
+
+[DEFAULT]
+# Ban-Dauer in Sekunden (1 Stunde)
+bantime  = 3600
+# Zeitfenster fuer Fehlversuche
+findtime = 600
+# Max. Fehlversuche bevor Ban
+maxretry = 5
+# Backend fuer Log-Ueberwachung
+backend  = systemd
+# Email-Benachrichtigung (optional)
+# destemail = admin@deine-domain.de
+# sender    = fail2ban@deine-domain.de
+# action    = %(action_mwl)s
+
+# Eigene IP-Adressen niemals bannen
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 192.168.0.0/16 172.16.0.0/12
+
+[sshd]
+enabled  = true
+port     = ssh
+filter   = sshd
+logpath  = /var/log/auth.log
+maxretry = 3
+bantime  = 86400
+
+[traefik-auth]
+enabled  = true
+port     = http,https
+filter   = traefik-auth
+logpath  = /var/log/traefik/access.log
+maxretry = 5
+bantime  = 3600
+
+[pihole-dns]
+enabled  = false
+port     = 53
+filter   = pihole
+logpath  = /var/log/pihole/FTL.log
+maxretry = 10
