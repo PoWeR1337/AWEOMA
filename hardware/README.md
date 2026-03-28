@@ -1,4 +1,79 @@
-# AWEOMA – Hardware / Custom PCB
+# AWEOMA – Hardware
+
+Dieses Verzeichnis enthaelt alle Hardware-Dateien fuer die AWEOMA Custom PCBs.
+Es gibt zwei Varianten:
+
+---
+
+## PCB Varianten
+
+### PCB Simple – [Dokumentation](pcb-simple/README.md)
+
+Die einfache Variante fuer den Grundbetrieb des Gateways.
+
+| Feature | Detail |
+|---|---|
+| Formfaktor | HAT-kompatibel (65 x 56 mm) |
+| Stromversorgung | 5 V / 3 A via USB-C oder Barrel-Jack |
+| **4-Pin LED** | Power, VPN, WAN, Error |
+| **2x PWM-Ausgang** | GPIO 12 und GPIO 13 (Luefter, Dimmer) |
+| **Touch-Sensor** | Kapazitiver Touch-Button (TTP223) |
+| **5V-Ausgang** | Geregelter Ausgang fuer externe Komponenten |
+| Reset-Taster | Hardware-Reset via GPIO 3 |
+| Verpolungsschutz | P-MOSFET Eingangsschutz |
+
+---
+
+### PCB Extended – [Dokumentation](pcb-extended/README.md)
+
+Alle Features des PCB Simple, plus:
+
+| Zusatz-Feature | Detail |
+|---|---|
+| **RFID-Reader** | RC522 Modul (SPI) – Zugangskontrolle / Key-Tags |
+| **Mini-LCD** | SSD1306 0.96" OLED (I2C) – Statusanzeige |
+| **Bewegungsmelder** | HC-SR501 PIR-Sensor – GPIO 25 |
+
+---
+
+## Verzeichnisstruktur
+
+```
+hardware/
+|-- pcb-simple/
+|   |-- README.md          # Dokumentation PCB Simple
+|   |-- schematic/         # KiCad Schaltplan (.kicad_sch)
+|   |-- gerber/            # Gerber-Dateien fuer Hersteller
+|   |-- bom/               # Stueckliste (BOM)
+|   +-- images/            # Fotos & 3D-Renders
+|
++-- pcb-extended/
+    |-- README.md          # Dokumentation PCB Extended
+    |-- schematic/         # KiCad Schaltplan
+    |-- gerber/            # Gerber-Dateien
+    |-- bom/               # Stueckliste
+    +-- images/            # Fotos & 3D-Renders
+```
+
+---
+
+## Schnellvergleich
+
+| Feature | PCB Simple | PCB Extended |
+|---|:---:|:---:|
+| Stromversorgung 5V/3A | ✅ | ✅ |
+| 4-Pin Status-LED | ✅ | ✅ |
+| 2x PWM-Ausgang | ✅ | ✅ |
+| Touch-Sensor | ✅ | ✅ |
+| 5V-Ausgang | ✅ | ✅ |
+| Reset-Taster | ✅ | ✅ |
+| RFID-Reader (RC522) | ❌ | ✅ |
+| Mini-LCD / OLED | ❌ | ✅ |
+| Bewegungsmelder (PIR) | ❌ | ✅ |
+
+---
+
+> KiCad-Schaltplaene, Gerber-Dateien, BOMs und Fotos folgen nach der ersten Fertigung.# AWEOMA – Hardware / Custom PCB
 
 Dieses Verzeichnis enthaelt alle Hardware-Dateien fuer das AWEOMA Custom PCB.
 
