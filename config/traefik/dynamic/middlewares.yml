@@ -1,0 +1,47 @@
+# Traefik Dynamic Configuration – Middlewares
+# Wird automatisch aus dem dynamic/-Verzeichnis geladen.
+
+http:
+  middlewares:
+
+    # Sichere HTTP-Header fuer alle Dienste
+    secure-headers:
+      headers:
+        sslRedirect: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customFrameOptionsValue: "SAMEORIGIN"
+        contentSecurityPolicy: "default-src 'self'"
+
+    # Rate Limiting – Schutz vor Brute-Force
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 50
+
+    # Basic Auth – Schutz fuer Admin-Bereiche
+    # Passwort generieren: echo $(htpasswd -nb admin PASSWORT) | sed -e s/\$/\$\$/g
+    basic-auth:
+      basicAuth:
+        users:
+          - "admin:$$apr1$$HASH_HIER$$"
+
+    # IP-Whitelist – nur bestimmte IPs erlauben (z.B. Heimnetz)
+    ip-whitelist:
+      ipWhiteList:
+        sourceRange:
+          - "10.0.0.0/8"
+          - "192.168.0.0/16"
+          - "172.16.0.0/12"
+
+    # Redirect www zu non-www
+    redirect-www:
+      redirectRegex:
+        regex: "^https://www\.(.*)"
+        replacement: "https://${1}"
+        permanent: true
