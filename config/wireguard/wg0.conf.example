@@ -1,0 +1,36 @@
+# WireGuard Konfiguration – wg0 (VPS-Tunnel)
+# Kopiere diese Datei nach wg0.conf und trage deine Werte ein.
+# ACHTUNG: wg0.conf NIEMALS in Git einchecken (steht in .gitignore)!
+
+[Interface]
+# Privater Schluessel des Raspberry Pi (wg genkey | tee privatekey | wg pubkey > publickey)
+PrivateKey = DEIN_PRIVATER_SCHLUESSEL_HIER
+
+# IP-Adresse des Pi im WireGuard-Netz (VPS-Tunnel)
+Address = 10.10.0.2/24
+
+# DNS ueber Pi-hole lokal aufloesen
+DNS = 127.0.0.1
+
+# MTU anpassen (optional, hilft bei manchen ISPs)
+MTU = 1420
+
+# Routing-Regeln (Masquerading)
+PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+[Peer]
+# Oeffentlicher Schluessel des VPS
+PublicKey = OEFFENTLICHER_SCHLUESSEL_VPS
+
+# Preshared Key fuer zusaetzliche Sicherheit (optional)
+# PresharedKey = PRESHARED_KEY_HIER
+
+# Oeffentliche IP und Port des VPS
+Endpoint = DEINE_VPS_IP:51820
+
+# Welche IPs ueber diesen Tunnel gehen (0.0.0.0/0 = alles)
+AllowedIPs = 0.0.0.0/0, ::/0
+
+# Keepalive fuer NAT-Traversal (25 Sekunden empfohlen)
+PersistentKeepalive = 25
