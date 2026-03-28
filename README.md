@@ -9,6 +9,9 @@
 
 - [Projektuebersicht](#projektuebersicht)
 - [Hardware](#hardware)
+  - [Raspberry Pi](#raspberry-pi)
+  - [PCB Simple](#pcb-simple)
+  - [PCB Extended](#pcb-extended)
 - [Netzwerkarchitektur](#netzwerkarchitektur)
 - [Software-Stack](#software-stack)
 - [VPS-Anbindung](#vps-anbindung)
@@ -19,7 +22,7 @@
 
 ## Projektuebersicht
 
-AWEOMA ist ein kompaktes, selbst gehostetes Netzwerk-Gateway auf einem **Raspberry Pi**, erweitert durch ein **massgeschneidertes PCB**. Das System fungiert als DNS-Resolver, VPN-Router, Reverse Proxy, Cloud-Storage-Server und Intrusion-Prevention-System gleichzeitig.
+AWEOMA ist ein kompaktes, selbst gehostetes Netzwerk-Gateway auf einem **Raspberry Pi**, erweitert durch ein **massgeschneidertes PCB** (in zwei Varianten). Das System fungiert als DNS-Resolver, VPN-Router, Reverse Proxy, Cloud-Storage-Server, Passwort-Manager und Intrusion-Prevention-System gleichzeitig.
 
 ---
 
@@ -34,20 +37,39 @@ AWEOMA ist ein kompaktes, selbst gehostetes Netzwerk-Gateway auf einem **Raspber
 | Speicher | microSD >= 32 GB oder USB-SSD |
 | Stromversorgung | 5 V / 3 A USB-C (ueber PCB) |
 
-### Custom PCB
+---
 
-Das PCB wurde speziell fuer dieses Projekt entworfen:
+### PCB Simple
+
+Die einfache PCB-Variante fuer den Grundbetrieb des Gateways.
 
 | Feature | Beschreibung |
 |---|---|
-| Stromversorgung | Geregelte 5 V / 3 A fuer den Pi via USB-C oder Barrel-Jack |
-| Status-LEDs | LEDs fuer Power, VPN-Status, WAN-Link und Fehler |
-| Reset-Taster | Hardware-Reset ohne SSH-Zugang |
-| GPIO-Breakout | Zugaengliche GPIO-Header fuer Erweiterungen |
-| RJ45-Passthrough | Saubere Kabelführung fuer LAN/WAN |
-| Formfaktor | HAT-kompatibel, passt in Standard-Hut-Gehaeuse |
+| **Stromversorgung** | Geregelte 5 V / 3 A fuer den Pi via USB-C oder Barrel-Jack |
+| **4-Pin LED** | RGB+W oder 4x Einzel-LEDs: Power, VPN, WAN, Error |
+| **2x PWM-Ausgang** | Steuerbare PWM-Ausgaenge (z.B. fuer Luefter, Dimmer) |
+| **Touch-Sensor** | Kapazitiver Touch-Button fuer Interaktion ohne Taster |
+| **5V-Ausgang** | Geregelter 5V-Pin fuer externe Komponenten |
+| **Reset-Taster** | Hardware-Reset ohne SSH-Zugang |
+| **Formfaktor** | HAT-kompatibel (65 x 56 mm), passt in Standard-Hut-Gehaeuse |
 
-> PCB-Dateien (Schaltplan, Gerber, BOM) befinden sich im Verzeichnis /hardware.
+> Dateien: `hardware/pcb-simple/`
+
+---
+
+### PCB Extended
+
+Die erweiterte Variante mit zusaetzlichen Sensoren und Anzeige – ideal fuer einen vollwertigen Standalone-Betrieb.
+
+Enthaelt alle Features des **PCB Simple**, plus:
+
+| Zusatz-Feature | Beschreibung |
+|---|---|
+| **RFID-Reader** | RC522 Modul (SPI) fuer Zugangskontrolle / Key-Tags |
+| **Mini-LCD** | 0.96" oder 1.3" OLED / I2C-LCD fuer Status-Anzeige |
+| **Bewegungsmelder** | PIR-Sensor fuer Praesenz-Erkennung (Aktivierung, Alarm) |
+
+> Dateien: `hardware/pcb-extended/`
 
 ---
 
@@ -67,6 +89,7 @@ Internet
    |-- WireGuard      --> ProtonVPN Exit
    |-- Traefik        --> lokale Dienste
    |-- Opencloud      --> Cloud-Storage
+   |-- Passbolt       --> Passwort-Manager
    |-- CrowdSec       --> IPS
    |-- Fail2ban       --> Brute-Force-Schutz
    |
@@ -90,16 +113,25 @@ Netzwerkweiter DNS-Resolver und Ad-Blocker. Blockiert Werbung, Tracker und schae
 
 Zwei WireGuard-Verbindungen gleichzeitig:
 
-1. **VPS-Tunnel**: Sicherer Kanal fuer eingehenden Traffic
-2. **ProtonVPN-Ausgang**: Gesamter ausgehender Traffic laeuft ueber ProtonVPN
+1. **VPS-Tunnel** (wg0): Sicherer Kanal fuer eingehenden Traffic vom VPS
+2. **ProtonVPN-Ausgang** (wg1): Gesamter ausgehender Traffic laeuft verschluesselt ueber ProtonVPN
 
 ### Traefik
 
-Laeuft auf VPS und lokal. Uebernimmt automatische TLS-Zertifikate (Lets Encrypt), Routing und Middleware (Auth, Rate-Limiting).
+Laeuft auf VPS und lokal. Uebernimmt automatische TLS-Zertifikate (Lets Encrypt), Routing und Middleware (Auth, Rate-Limiting, Secure-Headers).
 
 ### Opencloud
 
 Privater Cloud-Speicher mit WebDAV, Desktop-/Mobil-Sync und Dateiversionierung.
+
+### Passbolt
+
+Open-Source Passwort-Manager fuer Teams und Einzelpersonen. Laeuft als Docker-Container hinter Traefik.
+
+- End-to-End verschluesselt (OpenPGP)
+- Browser-Extension fuer Chrome/Firefox
+- API fuer CLI und Automatisierung
+- Web-Interface unter eigenem Sub-Domain
 
 ### CrowdSec
 
@@ -128,7 +160,7 @@ Der VPS uebernimmt:
 - WireGuard-Server-Endpunkt
 - CrowdSec-Agent fuer VPS-seitigen Schutz
 
-Der Pi verbindet sich beim Start automatisch per WireGuard mit dem VPS.
+Der Pi verbindet sich beim Start automatisch per WireGuard mit dem VPS. Eingehende Anfragen (Opencloud, Passbolt, etc.) werden durch den Tunnel an den Pi weitergeleitet.
 
 ---
 
@@ -137,21 +169,28 @@ Der Pi verbindet sich beim Start automatisch per WireGuard mit dem VPS.
 ```
 AWEOMA/
 |-- hardware/
-|   |-- schematic/     # KiCad Schaltplan
-|   |-- gerber/        # Fertigungsdateien fuer PCB-Hersteller
-|   |-- bom/           # Stueckliste
-|   +-- images/        # Fotos & Renders des PCBs
+|   |-- pcb-simple/        # PCB Simple: PWM, Touch, 5V, 4-Pin-LED
+|   |   |-- schematic/     # KiCad Schaltplan
+|   |   |-- gerber/        # Fertigungsdateien
+|   |   |-- bom/           # Stueckliste
+|   |   +-- images/        # Fotos & Renders
+|   +-- pcb-extended/      # PCB Extended: + RFID, LCD, Bewegungsmelder
+|       |-- schematic/
+|       |-- gerber/
+|       |-- bom/
+|       +-- images/
 |-- config/
-|   |-- pihole/        # Pi-hole Konfiguration
-|   |-- wireguard/     # WireGuard Configs (wg0.conf, wg1.conf)
-|   |-- traefik/       # Traefik Static & Dynamic Config
-|   |-- opencloud/     # Opencloud docker-compose & env
-|   |-- crowdsec/      # CrowdSec Profile & Bouncer
-|   +-- fail2ban/      # Jail-Konfigurationen
+|   |-- pihole/            # Pi-hole Konfiguration
+|   |-- wireguard/         # WireGuard Configs (wg0.conf, wg1.conf)
+|   |-- traefik/           # Traefik Static & Dynamic Config
+|   |-- opencloud/         # Opencloud docker-compose & env
+|   |-- passbolt/          # Passbolt docker-compose & env
+|   |-- crowdsec/          # CrowdSec Profile & Bouncer
+|   +-- fail2ban/          # Jail-Konfigurationen
 |-- scripts/
-|   |-- setup.sh       # Vollstaendiges Setup-Skript
-|   |-- update.sh      # Update aller Dienste
-|   +-- backup.sh      # Backup-Skript
+|   |-- setup.sh           # Vollstaendiges Setup-Skript
+|   |-- update.sh          # Update aller Dienste
+|   +-- backup.sh          # Backup-Skript
 |-- docs/
 |   |-- network-diagram.md
 |   +-- troubleshooting.md
@@ -166,8 +205,8 @@ AWEOMA/
 
 - Raspberry Pi 4 mit Raspberry Pi OS Lite (64-bit)
 - VPS mit Ubuntu 22.04 oder Debian 12
-- Domain (fuer TLS-Zertifikate)
-- PCB betueckt und angeschlossen
+- Domain (fuer TLS-Zertifikate und Subdomains)
+- PCB Simple oder PCB Extended betueckt und angeschlossen
 
 ### 1. Repository klonen
 
@@ -179,8 +218,17 @@ cd AWEOMA
 ### 2. Konfiguration anpassen
 
 ```bash
+# WireGuard
 cp config/wireguard/wg0.conf.example config/wireguard/wg0.conf
 nano config/wireguard/wg0.conf
+
+# Opencloud
+cp config/opencloud/.env.example config/opencloud/.env
+nano config/opencloud/.env
+
+# Passbolt
+cp config/passbolt/.env.example config/passbolt/.env
+nano config/passbolt/.env
 ```
 
 ### 3. Setup-Skript ausfuehren
@@ -193,10 +241,11 @@ sudo ./scripts/setup.sh
 ### 4. Dienste pruefen
 
 ```bash
-sudo wg show        # WireGuard Status
-pihole status       # Pi-hole Status
-docker logs traefik # Traefik Logs
-btop                # System-Monitor
+sudo wg show                # WireGuard Status
+pihole status               # Pi-hole Status
+docker compose -f config/opencloud/docker-compose.yml ps
+docker compose -f config/passbolt/docker-compose.yml ps
+btop                        # System-Monitor
 ```
 
 ---
