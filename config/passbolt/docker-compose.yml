@@ -1,0 +1,92 @@
+# Passbolt – Open-Source Passwort-Manager
+# Starten: docker compose up -d
+# Erfordert: .env Datei (siehe .env.example)
+# Dokumentation: https://www.passbolt.com/ce/docker
+
+version: "3.8"
+
+networks:
+  proxy:
+    external: true
+  passbolt_internal:
+    driver: bridge
+
+volumes:
+  passbolt_gpg:
+  passbolt_jwt:
+  passbolt_db:
+
+services:
+
+  passbolt_db:
+    image: mariadb:10.11
+    container_name: passbolt_db
+    restart: unless-stopped
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "true"
+      MYSQL_DATABASE: ${PASSBOLT_DB_NAME:-passbolt}
+      MYSQL_USER: ${PASSBOLT_DB_USER:-passbolt}
+      MYSQL_PASSWORD: ${PASSBOLT_DB_PASSWORD}
+    volumes:
+      - passbolt_db:/var/lib/mysql
+    networks:
+      - passbolt_internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  passbolt:
+    image: passbolt/passbolt:latest-ce
+    container_name: passbolt
+    restart: unless-stopped
+    depends_on:
+      passbolt_db:
+        condition: service_healthy
+    environment:
+      # Datenbank
+      DATASOURCES_DEFAULT_HOST: passbolt_db
+      DATASOURCES_DEFAULT_USERNAME: ${PASSBOLT_DB_USER:-passbolt}
+      DATASOURCES_DEFAULT_PASSWORD: ${PASSBOLT_DB_PASSWORD}
+      DATASOURCES_DEFAULT_DATABASE: ${PASSBOLT_DB_NAME:-passbolt}
+      # App
+      APP_FULL_BASE_URL: https://${PASSBOLT_DOMAIN}
+      # Email (SMTP)
+      EMAIL_DEFAULT_FROM_NAME: "Passbolt"
+      EMAIL_DEFAULT_FROM: ${PASSBOLT_EMAIL_FROM}
+      EMAIL_TRANSPORT_DEFAULT_HOST: ${PASSBOLT_SMTP_HOST}
+      EMAIL_TRANSPORT_DEFAULT_PORT: ${PASSBOLT_SMTP_PORT:-587}
+      EMAIL_TRANSPORT_DEFAULT_USERNAME: ${PASSBOLT_SMTP_USER}
+      EMAIL_TRANSPORT_DEFAULT_PASSWORD: ${PASSBOLT_SMTP_PASSWORD}
+      EMAIL_TRANSPORT_DEFAULT_TLS: "true"
+      # Performance
+      PASSBOLT_PLUGINS_EXPORT_ENABLED: "true"
+      PASSBOLT_PLUGINS_IMPORT_ENABLED: "true"
+    volumes:
+      - passbolt_gpg:/etc/passbolt/gpg
+      - passbolt_jwt:/etc/passbolt/jwt
+    networks:
+      - proxy
+      - passbolt_internal
+    command:
+      [
+        "/usr/bin/wait-for.sh",
+        "-t", "0",
+        "passbolt_db:3306",
+        "--",
+        "/docker-entrypoint.sh"
+      ]
+    labels:
+      # Traefik Labels
+      - "traefik.enable=true"
+      - "traefik.http.routers.passbolt.rule=Host(`${PASSBOLT_DOMAIN}`)"
+      - "traefik.http.routers.passbolt.entrypoints=websecure"
+      - "traefik.http.routers.passbolt.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.passbolt.middlewares=secure-headers@file"
+      - "traefik.http.services.passbolt.loadbalancer.server.port=80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/healthcheck/status.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
