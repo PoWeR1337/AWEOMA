@@ -1,0 +1,28 @@
+# CrowdSec – Acquisition Configuration
+# Definiert welche Log-Quellen CrowdSec ueberwacht.
+# Pfad: /etc/crowdsec/acquis.yaml
+
+---
+# SSH Logs – Brute-Force Erkennung
+filenames:
+  - /var/log/auth.log
+labels:
+  type: syslog
+---
+# Traefik Access Logs
+filenames:
+  - /var/log/traefik/access.log
+labels:
+  type: traefik
+---
+# Pi-hole FTL Logs
+filenames:
+  - /var/log/pihole/FTL.log
+labels:
+  type: syslog
+---
+# Syslog (allgemein)
+filenames:
+  - /var/log/syslog
+labels:
+  type: syslog
