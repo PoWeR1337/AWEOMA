@@ -1,0 +1,25 @@
+# WireGuard Konfiguration – wg1 (ProtonVPN Exit)
+# Vom ProtonVPN-Dashboard unter "WireGuard" herunterladen.
+# ACHTUNG: wg1-protonvpn.conf NIEMALS in Git einchecken!
+
+[Interface]
+# Privater Schluessel (von ProtonVPN generiert)
+PrivateKey = PROTON_PRIVATER_SCHLUESSEL
+
+# Deine ProtonVPN WireGuard-Adresse
+Address = 10.2.0.2/32
+
+# Optional: DNS ueber ProtonVPN
+# DNS = 10.2.0.1
+
+[Peer]
+# Oeffentlicher Schluessel des ProtonVPN-Servers
+PublicKey = PROTON_SERVER_OEFFENTLICHER_SCHLUESSEL
+
+# Erlaubte IPs – nur bestimmten Traffic durch ProtonVPN
+AllowedIPs = 0.0.0.0/0
+
+# ProtonVPN Server Endpoint (aus dem Dashboard kopieren)
+Endpoint = PROTONVPN_SERVER_IP:51820
+
+PersistentKeepalive = 25
