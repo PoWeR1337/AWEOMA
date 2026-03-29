@@ -1,227 +1,291 @@
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 using AweomaPi.Hardware;
 using AweomaPi.Services;
 using Microsoft.Extensions.Logging;
 
-// ====================================================================
-// AWEOMA – Raspberry Pi Gateway Hardware Controller
-// Einstiegspunkt: erkennt aktive Hardware, startet passende Services.
-// ====================================================================
-
-// Logging einrichten
-using var logFactory = LoggerFactory.Create(b =>
-    b.AddConsole().SetMinimumLevel(LogLevel.Information));
-
-var log = logFactory.CreateLogger("AWEOMA");
-
-Console.WriteLine();
-Console.WriteLine("  ╔══════════════════════════════════════╗");
-Console.WriteLine("  ║   AWEOMA – Raspberry Pi Gateway      ║");
-Console.WriteLine("  ║   Hardware Controller v1.0           ║");
-Console.WriteLine("  ╚══════════════════════════════════════╝");
-Console.WriteLine();
-
-// ----------------------------------------------------------------
-// Schritt 1: Hardware erkennen
-// ----------------------------------------------------------------
-log.LogInformation("Schritt 1/3 – Hardware-Erkennung...");
-var detector = new HardwareDetector(logFactory.CreateLogger<HardwareDetector>());
-HardwareProfile hw = detector.Detect();
-
-Console.WriteLine();
-Console.WriteLine($"  PCB-Variante : {hw.Variant}");
-Console.WriteLine($"  LEDs (4x)    : {(hw.HasLeds            ? "✓ erkannt" : "✗ nicht verfuegbar")}");
-Console.WriteLine($"  PWM (2x)     : {(hw.HasPwm             ? "✓ erkannt" : "✗ nicht verfuegbar")}");
-Console.WriteLine($"  Touch/Display: {(hw.HasTouchForDisplay  ? "✓ erkannt" : "✗ nicht verfuegbar")}");
-Console.WriteLine($"  OLED-Display : {(hw.HasOledDisplay      ? "✓ erkannt" : "✗ nicht vorhanden (Simple)")}");
-Console.WriteLine($"  RFID RC522   : {(hw.HasRfidReader       ? "✓ erkannt" : "✗ nicht vorhanden (Simple)")}");
-Console.WriteLine($"  PIR HC-SR501 : {(hw.HasPirSensor        ? "✓ erkannt" : "✗ nicht vorhanden (Simple)")}");
-Console.WriteLine();
-
-// ----------------------------------------------------------------
-// Schritt 2: Services initialisieren (nur aktive Komponenten)
-// ----------------------------------------------------------------
-log.LogInformation("Schritt 2/3 – Services starten...");
-
-// LEDs – immer (beide Varianten)
-var leds = new LedService(hw, logFactory.CreateLogger<LedService>());
-leds.Initialize();
-
-// Display + Touch-Navigation – nur Extended (oder Simple ohne Display -> kein Fehler)
-var display = new DisplayService(hw, logFactory.CreateLogger<DisplayService>());
-display.Initialize();
-
-// RFID – nur Extended
-var rfid = new RfidService(hw, logFactory.CreateLogger<RfidService>());
-rfid.Initialize();
-
-// PIR – nur Extended
-var pir = new PirService(hw, logFactory.CreateLogger<PirService>());
-pir.Initialize();
-
-// ----------------------------------------------------------------
-// Events verbinden
-// ----------------------------------------------------------------
-
-// RFID-Tag -> LED blinken + Display aktualisieren
-rfid.TagDetected += (_, e) =>
+namespace AweomaPi
 {
-    log.LogInformation("[Event] RFID-Tag: {Tag}", e.TagId);
-    display.LastRfidTag = e.TagId;
-    display.ShowCurrentPage();
-    _ = leds.BlinkAsync(GpioPins.LedVpn, times: 2, intervalMs: 100);
-};
-
-// Bewegung -> Error-LED an + Display aktualisieren
-pir.MotionDetected += (_, e) =>
-{
-    log.LogInformation("[Event] Bewegung erkannt um {Time}", e.Timestamp.ToLocalTime());
-    display.PirStatus = $"Aktiv {e.Timestamp:HH:mm:ss}";
-    display.ShowCurrentPage();
-    leds.SetError(true);
-};
-
-pir.MotionEnded += (_, e) =>
-{
-    display.PirStatus = "Ruhig";
-    display.ShowCurrentPage();
-    leds.SetError(false);
-};
-
-// ----------------------------------------------------------------
-// Schritt 3: Haupt-Loop
-// ----------------------------------------------------------------
-log.LogInformation("Schritt 3/3 – Haupt-Loop gestartet. [Ctrl+C zum Beenden]");
-
-using var cts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    cts.Cancel();
-    log.LogInformation("Beende AWEOMA...");
-};
-
-// Statusdaten periodisch aktualisieren
-var updateTimer = new PeriodicTimer(TimeSpan.FromSeconds(10));
-
-try
-{
-    while (await updateTimer.WaitForNextTickAsync(cts.Token))
+    /// <summary>
+    /// AWEOMA Pi Gateway — Haupt-Einstiegspunkt.
+    ///
+    /// Ablauf:
+    ///   1. Hardware erkennen (PCB Simple oder Extended)
+    ///   2. Services initialisieren (nur fuer vorhandene Hardware)
+    ///   3. Buttons registrieren (BTN1 / BTN2)
+    ///   4. Hauptschleife starten
+    /// </summary>
+    internal class Program
     {
-        // System-Infos lesen
-        display.IpAddress    = GetLocalIp();
-        display.CpuTemp      = GetCpuTemp();
-        display.CpuLoad      = GetCpuLoad();
-        display.VpnStatus    = GetWgStatus();
-        display.PiholeStatus = GetPiholeStatus();
-        display.PirStatus    = pir.StatusText;
+        private static ILoggerFactory?   _loggerFactory;
+        private static ILogger<Program>? _logger;
 
-        // Display aktualisieren (nur wenn Extended + Display vorhanden)
-        display.ShowCurrentPage();
+        // Services
+        private static LedService?     _ledService;
+        private static DisplayService? _displayService;
+        private static PirService?     _pirService;
+        private static RfidService?    _rfidService;
+        private static ModeService?    _modeService;
+        private static ButtonService?  _buttonService;
 
-        // WAN-LED: Netzwerkverbindung pruefen
-        leds.SetWan(CheckInternet());
+        private static readonly CancellationTokenSource _cts = new();
+
+        // ─── Main ────────────────────────────────────────────────────────────────
+        static async Task Main(string[] args)
+        {
+            // Logger aufsetzen
+            _loggerFactory = LoggerFactory.Create(b =>
+                b.AddConsole().SetMinimumLevel(LogLevel.Information));
+            _logger = _loggerFactory.CreateLogger<Program>();
+
+            _logger.LogInformation("=== AWEOMA Pi Gateway startet ===");
+            _logger.LogInformation("Version: 1.0.0 | Datum: {date}", DateTime.Now.ToString("yyyy-MM-dd HH:mm"));
+
+            // Signalhandler fuer sauberes Beenden (Ctrl+C / systemd stop)
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true;
+                _logger.LogInformation("Beenden-Signal empfangen.");
+                _cts.Cancel();
+            };
+
+            // ─── 1. Hardware erkennen ──────────────────────────────────────────
+            _logger.LogInformation("--- Hardware-Erkennung ---");
+            var detector = new HardwareDetector(_loggerFactory.CreateLogger<HardwareDetector>());
+            var hw = detector.Detect();
+
+            _logger.LogInformation("PCB-Variante : {variant}", hw.Variant);
+            _logger.LogInformation("Display (OLED): {v}", hw.HasOled     ? "GEFUNDEN (0x3C)" : "nicht vorhanden");
+            _logger.LogInformation("RFID (RC522)  : {v}", hw.HasRfid     ? "GEFUNDEN"         : "nicht vorhanden");
+            _logger.LogInformation("PIR (HC-SR501): {v}", hw.HasPir      ? "GEFUNDEN"         : "nicht vorhanden");
+            _logger.LogInformation("Touch (TTP223): {v}", hw.HasTouch    ? "GEFUNDEN"         : "nicht vorhanden");
+            _logger.LogInformation("BTN1 (GPIO 5) : {v}", hw.HasButton1  ? "GEFUNDEN"         : "nicht vorhanden");
+            _logger.LogInformation("BTN2 (GPIO 6) : {v}", hw.HasButton2  ? "GEFUNDEN"         : "nicht vorhanden");
+            _logger.LogInformation("--------------------------");
+
+            // ─── 2. Services initialisieren ────────────────────────────────────
+            _ledService = new LedService(
+                _loggerFactory.CreateLogger<LedService>());
+            _ledService.Initialize();
+
+            if (hw.HasOled)
+            {
+                _displayService = new DisplayService(
+                    _loggerFactory.CreateLogger<DisplayService>(),
+                    touchPin: hw.HasTouch ? GpioPins.Touch : -1);
+                _displayService.Initialize();
+            }
+
+            if (hw.HasPir)
+            {
+                _pirService = new PirService(
+                    _loggerFactory.CreateLogger<PirService>());
+                _pirService.Initialize();
+            }
+
+            if (hw.HasRfid)
+            {
+                _rfidService = new RfidService(
+                    _loggerFactory.CreateLogger<RfidService>());
+                _rfidService.Initialize();
+            }
+
+            // ModeService benoetigt LedService; Display + PIR optional
+            _modeService = new ModeService(
+                _loggerFactory.CreateLogger<ModeService>(),
+                _ledService,
+                _displayService,
+                _pirService);
+
+            // PIR-Ereignisse weiterleiten an ModeService
+            if (_pirService != null)
+            {
+                _pirService.MotionDetected += () => _modeService.OnMotionDetected();
+                _pirService.MotionTimeout  += () => _modeService.OnMotionTimeout();
+            }
+
+            // RFID-Karten-Ereignisse an ModeService weiterleiten
+            if (_rfidService != null)
+            {
+                _rfidService.CardDetected += (cardId) => HandleRfidCard(cardId);
+            }
+
+            // ─── 3. Buttons initialisieren ──────────────────────────────────────
+            if (hw.HasButton1 || hw.HasButton2)
+            {
+                _buttonService = new ButtonService(
+                    _loggerFactory.CreateLogger<ButtonService>(),
+                    _modeService,
+                    _ledService);
+
+                _buttonService.RebootRequested  += ExecuteReboot;
+                _buttonService.ShutdownRequested += ExecuteShutdown;
+                _buttonService.Initialize();
+
+                _logger.LogInformation("Buttons initialisiert: BTN1={b1}, BTN2={b2}",
+                    hw.HasButton1, hw.HasButton2);
+            }
+            else
+            {
+                _logger.LogWarning("Keine Buttons gefunden — Modus-Wechsel nur per RFID moeglich.");
+            }
+
+            // ─── 4. Startmodus setzen ───────────────────────────────────────────
+            _modeService.SetMode(GatewayMode.Normal);
+            _ledService.SetStatusAsync(LedStatus.Normal);
+
+            _logger.LogInformation("=== AWEOMA Gateway bereit ===");
+            _logger.LogInformation("BTN1 kurz = naechster Modus | BTN1 3s = Master-Key");
+            _logger.LogInformation("BTN2 kurz = PIR toggle      | BTN2 3s = Standby");
+            _logger.LogInformation("Beide 2x  = Reboot          | Beide 3x = Shutdown");
+
+            // ─── 5. Hauptschleife ───────────────────────────────────────────────
+            try
+            {
+                await RunMainLoopAsync(_cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("Hauptschleife beendet.");
+            }
+            finally
+            {
+                Cleanup();
+            }
+
+            _logger.LogInformation("=== AWEOMA Gateway gestoppt ===");
+        }
+
+        // ─── Hauptschleife ────────────────────────────────────────────────────────
+        private static async Task RunMainLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                // Status-LED periodisch aktualisieren (alle 30 Sekunden)
+                if (_modeService?.CurrentMode != GatewayMode.Standby)
+                {
+                    await UpdateStatusLedsAsync();
+                }
+
+                await Task.Delay(30_000, ct);
+            }
+        }
+
+        // ─── LED-Status-Update ────────────────────────────────────────────────────
+        private static async Task UpdateStatusLedsAsync()
+        {
+            if (_ledService == null) return;
+
+            // WAN pruefen (Ping Google DNS)
+            bool wanOk = await CheckWanAsync();
+            bool vpnOk = CheckVpnActive();
+
+            await _ledService.SetStatusAsync(new LedStatus
+            {
+                Power = true,
+                Vpn   = vpnOk,
+                Wan   = wanOk,
+                Error = !wanOk || !vpnOk,
+            });
+        }
+
+        private static async Task<bool> CheckWanAsync()
+        {
+            try
+            {
+                using var ping = new System.Net.NetworkInformation.Ping();
+                var reply = await ping.SendPingAsync("8.8.8.8", 2000);
+                return reply.Status == System.Net.NetworkInformation.IPStatus.Success;
+            }
+            catch { return false; }
+        }
+
+        private static bool CheckVpnActive()
+        {
+            try
+            {
+                // WireGuard wg0 Interface pruefen
+                var result = RunCommand("wg", "show wg0");
+                return result.Contains("interface: wg0");
+            }
+            catch { return false; }
+        }
+
+        // ─── RFID Karten-Handler ──────────────────────────────────────────────────
+        private static void HandleRfidCard(string cardId)
+        {
+            if (_modeService == null) return;
+
+            _logger?.LogInformation("RFID Karte erkannt: {id}", cardId);
+
+            // Karten-IDs => Modus (in Produktion aus Config-Datei lesen)
+            var mode = cardId switch
+            {
+                "CARD_1" => GatewayMode.Normal,
+                "CARD_2" => GatewayMode.Minimal,
+                "CARD_3" => GatewayMode.Night,
+                "CARD_4" => GatewayMode.Standby,
+                "MASTER" => GatewayMode.MasterKey,
+                _        => (GatewayMode?)null,
+            };
+
+            if (mode.HasValue)
+                _modeService.SetMode(mode.Value);
+            else
+                _logger?.LogWarning("Unbekannte RFID Karte: {id}", cardId);
+        }
+
+        // ─── Reboot / Shutdown ────────────────────────────────────────────────────
+        private static void ExecuteReboot()
+        {
+            _logger?.LogWarning("REBOOT wird ausgefuehrt...");
+            Cleanup();
+            RunCommand("sudo", "reboot");
+        }
+
+        private static void ExecuteShutdown()
+        {
+            _logger?.LogWarning("SHUTDOWN wird ausgefuehrt...");
+            Cleanup();
+            RunCommand("sudo", "shutdown -h now");
+        }
+
+        // ─── Cleanup ─────────────────────────────────────────────────────────────
+        private static void Cleanup()
+        {
+            _logger?.LogInformation("Cleanup...");
+            _buttonService?.Dispose();
+            _pirService?.Dispose();
+            _rfidService?.Dispose();
+            _displayService?.Dispose();
+            _ledService?.Dispose();
+            _loggerFactory?.Dispose();
+        }
+
+        // ─── Hilfsmethode: Shell-Befehl ausfuehren ────────────────────────────────
+        private static string RunCommand(string cmd, string args)
+        {
+            try
+            {
+                using var p = new Process();
+                p.StartInfo = new ProcessStartInfo(cmd, args)
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute        = false,
+                    CreateNoWindow         = true,
+                };
+                p.Start();
+                string output = p.StandardOutput.ReadToEnd();
+                p.WaitForExit();
+                return output;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning("RunCommand Fehler ({cmd} {args}): {msg}", cmd, args, ex.Message);
+                return string.Empty;
+            }
+        }
     }
-}
-catch (OperationCanceledException)
-{
-    // Normales Ende durch Ctrl+C
-}
-
-// ----------------------------------------------------------------
-// Cleanup
-// ----------------------------------------------------------------
-log.LogInformation("Services werden beendet...");
-display.Dispose();
-rfid.Dispose();
-pir.Dispose();
-leds.SetPower(false);
-leds.Dispose();
-Console.WriteLine("Auf Wiedersehen!");
-
-// ====================================================================
-// Hilfsmethoden
-// ====================================================================
-
-static string GetLocalIp()
-{
-    try
-    {
-        var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
-        foreach (var ip in host.AddressList)
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                return ip.ToString();
-        return "N/A";
-    }
-    catch { return "Fehler"; }
-}
-
-static string GetCpuTemp()
-{
-    try
-    {
-        var raw = File.ReadAllText("/sys/class/thermal/thermal_zone0/temp");
-        return $"{int.Parse(raw.Trim()) / 1000.0:F1}";
-    }
-    catch { return "N/A"; }
-}
-
-static string GetCpuLoad()
-{
-    try
-    {
-        // /proc/stat auslesen fuer CPU-Last
-        var lines = File.ReadAllLines("/proc/stat");
-        var cpu   = lines[0].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        long user = long.Parse(cpu[1]), nice = long.Parse(cpu[2]),
-             sys  = long.Parse(cpu[3]), idle = long.Parse(cpu[4]);
-        long total = user + nice + sys + idle;
-        double load = total > 0 ? (total - idle) * 100.0 / total : 0;
-        return $"{load:F1}";
-    }
-    catch { return "N/A"; }
-}
-
-static string GetWgStatus()
-{
-    try
-    {
-        var result = RunCommand("wg", "show wg0");
-        return result.Contains("peer") ? "Aktiv" : "Getrennt";
-    }
-    catch { return "N/A"; }
-}
-
-static string GetPiholeStatus()
-{
-    try
-    {
-        var result = RunCommand("pihole", "status");
-        return result.Contains("Active") ? "ON" : "OFF";
-    }
-    catch { return "N/A"; }
-}
-
-static bool CheckInternet()
-{
-    try
-    {
-        using var ping = new System.Net.NetworkInformation.Ping();
-        var reply = ping.Send("1.1.1.1", 1000);
-        return reply.Status == System.Net.NetworkInformation.IPStatus.Success;
-    }
-    catch { return false; }
-}
-
-static string RunCommand(string cmd, string args)
-{
-    var psi = new System.Diagnostics.ProcessStartInfo(cmd, args)
-    {
-        RedirectStandardOutput = true,
-        UseShellExecute        = false,
-        CreateNoWindow         = true
-    };
-    using var proc = System.Diagnostics.Process.Start(psi)!;
-    string output = proc.StandardOutput.ReadToEnd();
-    proc.WaitForExit();
-    return output;
 }
