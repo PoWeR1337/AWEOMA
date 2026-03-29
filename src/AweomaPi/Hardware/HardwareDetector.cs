@@ -1,214 +1,176 @@
+using System;
 using System.Device.I2c;
 using System.Device.Spi;
 using System.Device.Gpio;
 using Microsoft.Extensions.Logging;
 
-namespace AweomaPi.Hardware;
-
-/// <summary>
-/// Ergebnis der Hardware-Erkennung.
-/// </summary>
-public sealed record HardwareProfile
+namespace AweomaPi.Hardware
 {
-    // PCB-Variante
-    public PcbVariant Variant         { get; init; } = PcbVariant.Unknown;
+    /// <summary>
+    /// Erkennungsresultat der Hardware-Erkennung beim Systemstart.
+    /// </summary>
+    public record HardwareInfo(
+        PcbVariant Variant,
+        bool HasOled,
+        bool HasRfid,
+        bool HasPir,
+        bool HasTouch,
+        bool HasButton1,
+        bool HasButton2
+    );
 
-    // Immer vorhanden (PCB Simple)
-    public bool HasLeds               { get; init; }
-    public bool HasPwm                { get; init; }
-    public bool HasTouchForDisplay    { get; init; }  // Touch steuert das Display
-    public bool HasResetButton        { get; init; }
-
-    // Nur PCB Extended
-    public bool HasOledDisplay        { get; init; }  // I2C Display (SSD1306)
-    public bool HasRfidReader         { get; init; }  // SPI RC522
-    public bool HasPirSensor          { get; init; }  // PIR HC-SR501
-
-    public override string ToString() =>
-        $"PCB: {Variant} | LEDs={HasLeds} | PWM={HasPwm} | " +
-        $"Touch(Display)={HasTouchForDisplay} | OLED={HasOledDisplay} | " +
-        $"RFID={HasRfidReader} | PIR={HasPirSensor}";
-}
-
-public enum PcbVariant
-{
-    Unknown,
-    Simple,
-    Extended
-}
-
-/// <summary>
-/// Erkennt welche Hardware-Komponenten aktiv/vorhanden sind.
-/// Strategie:
-///   1. I2C-Bus auf bekannte Adressen pruefen -> Display vorhanden?
-///   2. SPI-Bus pruefen -> RFID vorhanden?
-///   3. GPIO-Pins pruefen -> Touch, PIR, LEDs, PWM
-///   4. Aus den Ergebnissen PCB-Variante ableiten
-/// </summary>
-public sealed class HardwareDetector
-{
-    private readonly ILogger<HardwareDetector> _log;
-
-    public HardwareDetector(ILogger<HardwareDetector> log)
+    /// <summary>
+    /// Moeglische PCB-Varianten.
+    /// </summary>
+    public enum PcbVariant
     {
-        _log = log;
+        /// <summary>
+        /// PCB Simple: 2x PWM, Touch (Display-Navigation), 5V-Ausgang, 4-Pin LED, BTN1, BTN2.
+        /// Kein RFID, kein OLED, kein PIR.
+        /// </summary>
+        Simple,
+
+        /// <summary>
+        /// PCB Extended: Alles von Simple + RFID (RC522 SPI), Mini-LCD (SSD1306 OLED I2C), PIR (HC-SR501).
+        /// </summary>
+        Extended,
     }
 
-    public HardwareProfile Detect()
+    /// <summary>
+    /// Erkennt automatisch welche Hardware verbaut ist.
+    ///
+    /// Erkennungs-Methoden:
+    ///   OLED  — I2C-Probe auf Adresse 0x3C (SSD1306)
+    ///   RFID  — SPI-Probe: Version-Register (0x37) des RC522 lesen
+    ///   PIR   — GPIO 25 auf PullDown konfigurieren und lesen
+    ///   Touch — GPIO 24 auf PullDown konfigurieren und lesen
+    ///   BTN1  — GPIO 5  auf PullUp konfigurieren und lesen (LOW wenn Taste gefunden)
+    ///   BTN2  — GPIO 6  auf PullUp konfigurieren und lesen (LOW wenn Taste gefunden)
+    ///
+    /// Variante: Extended wenn OLED, RFID oder PIR gefunden, sonst Simple.
+    /// </summary>
+    public class HardwareDetector
     {
-        _log.LogInformation("=== AWEOMA Hardware-Erkennung gestartet ===");
+        private readonly ILogger<HardwareDetector> _logger;
 
-        bool hasDisplay = ProbeI2cDisplay();
-        bool hasRfid    = ProbeSpiRfid();
-        bool hasPir     = ProbeGpioInput(GpioPins.PirSensor, "PIR HC-SR501");
-        bool hasTouch   = ProbeGpioInput(GpioPins.TouchDisplay, "Touch TTP223 (Display)");
-        bool hasLeds    = ProbeGpioOutputs();
-        bool hasPwm     = ProbeGpioPwm();
-
-        // PCB-Variante ableiten:
-        // Extended = Display (I2C) UND/ODER RFID (SPI) UND/ODER PIR vorhanden
-        var variant = (hasDisplay || hasRfid || hasPir)
-            ? PcbVariant.Extended
-            : PcbVariant.Simple;
-
-        var profile = new HardwareProfile
+        public HardwareDetector(ILogger<HardwareDetector> logger)
         {
-            Variant          = variant,
-            HasLeds          = hasLeds,
-            HasPwm           = hasPwm,
-            HasTouchForDisplay = hasTouch,
-            HasResetButton   = true,  // immer vorhanden, nicht detektierbar ohne Druecken
-            HasOledDisplay   = hasDisplay,
-            HasRfidReader    = hasRfid,
-            HasPirSensor     = hasPir,
-        };
-
-        _log.LogInformation("=== Hardware-Profil: {Profile} ===", profile);
-        return profile;
-    }
-
-    // ----------------------------------------------------------------
-    // I2C: Pruefe ob SSD1306 OLED auf Adresse 0x3C antwortet
-    // ----------------------------------------------------------------
-    private bool ProbeI2cDisplay()
-    {
-        try
-        {
-            var settings = new I2cConnectionSettings(GpioPins.I2CBus, GpioPins.DisplayI2CAddr);
-            using var device = I2cDevice.Create(settings);
-
-            // Sende 0x00 (Command-Byte) und pruefe ob ACK kommt
-            device.WriteByte(0x00);
-            _log.LogInformation("[I2C] OLED-Display (SSD1306) erkannt auf Bus {Bus}, Adresse 0x{Addr:X2}",
-                GpioPins.I2CBus, GpioPins.DisplayI2CAddr);
-            return true;
+            _logger = logger;
         }
-        catch (Exception ex)
+
+        // ─── Haupt-Erkennungsroutine ─────────────────────────────────────────────
+        public HardwareInfo Detect()
         {
-            _log.LogDebug("[I2C] Kein Display erkannt: {Msg}", ex.Message);
-            return false;
+            bool oled    = DetectOled();
+            bool rfid    = DetectRfid();
+            bool pir     = DetectPir();
+            bool touch   = DetectGpioInput(GpioPins.Touch,   PinMode.InputPullDown, "Touch (GPIO 24)");
+            bool button1 = DetectGpioInput(GpioPins.Button1, PinMode.InputPullUp,   "BTN1  (GPIO 5)");
+            bool button2 = DetectGpioInput(GpioPins.Button2, PinMode.InputPullUp,   "BTN2  (GPIO 6)");
+
+            // Variante ableiten
+            var variant = (oled || rfid || pir) ? PcbVariant.Extended : PcbVariant.Simple;
+
+            return new HardwareInfo(variant, oled, rfid, pir, touch, button1, button2);
         }
-    }
 
-    // ----------------------------------------------------------------
-    // SPI: Pruefe ob RC522 RFID auf SPI Bus 0 antwortet
-    // ----------------------------------------------------------------
-    private bool ProbeSpiRfid()
-    {
-        try
-        {
-            var settings = new SpiConnectionSettings(0, 0)  // Bus 0, CS 0 (CE0 = GPIO 8)
-            {
-                ClockFrequency = 1_000_000,
-                Mode = SpiMode.Mode0
-            };
-            using var device = SpiDevice.Create(settings);
-
-            // RC522: Register 0x37 lesen (Version-Register)
-            // Sende: Read-Bit (MSB=1) + Adresse + 0x00 fuer Empfang
-            Span<byte> writeBuffer = stackalloc byte[] { 0x37 << 1 | 0x80, 0x00 };
-            Span<byte> readBuffer  = stackalloc byte[2];
-            device.TransferFullDuplex(writeBuffer, readBuffer);
-
-            byte version = readBuffer[1];
-            bool isRc522 = version is 0x91 or 0x92;  // typische RC522-Versions-Bytes
-
-            if (isRc522)
-                _log.LogInformation("[SPI] RFID RC522 erkannt (Version: 0x{V:X2})", version);
-            else
-                _log.LogDebug("[SPI] SPI-Geraet vorhanden aber unbekannt (Version: 0x{V:X2})", version);
-
-            return isRc522;
-        }
-        catch (Exception ex)
-        {
-            _log.LogDebug("[SPI] Kein RFID erkannt: {Msg}", ex.Message);
-            return false;
-        }
-    }
-
-    // ----------------------------------------------------------------
-    // GPIO Input: Pruefe ob Pin les- und setzbar ist
-    // ----------------------------------------------------------------
-    private bool ProbeGpioInput(int pin, string name)
-    {
-        try
-        {
-            using var controller = new GpioController();
-            controller.OpenPin(pin, PinMode.InputPullDown);
-            _ = controller.Read(pin);
-            controller.ClosePin(pin);
-            _log.LogInformation("[GPIO] {Name} erkannt auf Pin BCM {Pin}", name, pin);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _log.LogDebug("[GPIO] {Name} (Pin {Pin}) nicht erreichbar: {Msg}", name, pin, ex.Message);
-            return false;
-        }
-    }
-
-    // ----------------------------------------------------------------
-    // GPIO Output: LEDs pruefen (PCB Simple Grundausstattung)
-    // ----------------------------------------------------------------
-    private bool ProbeGpioOutputs()
-    {
-        var ledPins = new[] { GpioPins.LedPower, GpioPins.LedVpn, GpioPins.LedWan, GpioPins.LedError };
-        int ok = 0;
-        foreach (var pin in ledPins)
+        // ─── OLED (SSD1306, I2C 0x3C) ────────────────────────────────────────────
+        private bool DetectOled()
         {
             try
             {
-                using var controller = new GpioController();
-                controller.OpenPin(pin, PinMode.Output);
-                controller.Write(pin, PinValue.Low);
-                controller.ClosePin(pin);
-                ok++;
+                var settings = new I2cConnectionSettings(busId: 1, deviceAddress: 0x3C);
+                using var device = I2cDevice.Create(settings);
+                // Byte lesen — kein Exception = Geraet vorhanden
+                device.ReadByte();
+                _logger.LogInformation("OLED (SSD1306) gefunden auf I2C 0x3C.");
+                return true;
             }
-            catch { /* pin nicht verfuegbar */ }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("OLED nicht gefunden: {msg}", ex.Message);
+                return false;
+            }
         }
-        bool hasLeds = ok == ledPins.Length;
-        _log.LogInformation("[GPIO] LEDs: {Ok}/{Total} Pins erreichbar", ok, ledPins.Length);
-        return hasLeds;
-    }
 
-    // ----------------------------------------------------------------
-    // PWM: Pruefe ob Hardware-PWM Pins verfuegbar sind
-    // ----------------------------------------------------------------
-    private bool ProbeGpioPwm()
-    {
-        try
+        // ─── RFID (RC522, SPI) ────────────────────────────────────────────────────
+        private bool DetectRfid()
         {
-            using var controller = new GpioController();
-            controller.OpenPin(GpioPins.Pwm0, PinMode.Output);
-            controller.ClosePin(GpioPins.Pwm0);
-            _log.LogInformation("[GPIO] PWM-Pins erkannt (GPIO 12, 13)");
-            return true;
+            try
+            {
+                var settings = new SpiConnectionSettings(busId: 0, chipSelectLine: 0)
+                {
+                    ClockFrequency = 1_000_000,
+                    Mode           = SpiMode.Mode0,
+                };
+                using var device = SpiDevice.Create(settings);
+
+                // RC522 Version-Register (Adresse 0x37) lesen
+                // Lese-Kommando: Adresse | 0x80
+                byte[] writeBuffer = { (byte)(0x37 | 0x80), 0x00 };
+                byte[] readBuffer  = new byte[2];
+                device.TransferFullDuplex(writeBuffer, readBuffer);
+
+                byte version = readBuffer[1];
+                // RC522 meldet 0x91 (v1) oder 0x92 (v2)
+                if (version == 0x91 || version == 0x92)
+                {
+                    _logger.LogInformation("RFID (RC522 v{v}) gefunden auf SPI0.", version == 0x91 ? "1" : "2");
+                    return true;
+                }
+
+                _logger.LogDebug("SPI Geraet antwortet, aber kein RC522 (Version=0x{v:X2}).", version);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("RFID nicht gefunden: {msg}", ex.Message);
+                return false;
+            }
         }
-        catch (Exception ex)
+
+        // ─── PIR (HC-SR501, GPIO 25) ──────────────────────────────────────────────
+        private bool DetectPir()
         {
-            _log.LogDebug("[GPIO] PWM-Pins nicht erreichbar: {Msg}", ex.Message);
-            return false;
+            try
+            {
+                using var gpio = new GpioController();
+                gpio.OpenPin(GpioPins.Pir, PinMode.InputPullDown);
+
+                // HC-SR501 benoetigt 30-60s Aufwaermzeit; hier nur Erreichbarkeit pruefen
+                // Falls GPIO ohne Exception geoeffnet werden kann, nehmen wir PIR als vorhanden an
+                // (In echtem Setup: Pin-Zustand nach Aufwaermzeit pruefen)
+                var value = gpio.Read(GpioPins.Pir);
+                gpio.ClosePin(GpioPins.Pir);
+
+                _logger.LogInformation("PIR (HC-SR501) GPIO {pin} erreichbar (Wert: {v}).", GpioPins.Pir, value);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("PIR nicht gefunden: {msg}", ex.Message);
+                return false;
+            }
+        }
+
+        // ─── GPIO-Eingang erkennen (Touch, BTN1, BTN2) ───────────────────────────
+        private bool DetectGpioInput(int pin, PinMode mode, string name)
+        {
+            try
+            {
+                using var gpio = new GpioController();
+                gpio.OpenPin(pin, mode);
+                var value = gpio.Read(pin);
+                gpio.ClosePin(pin);
+
+                _logger.LogInformation("{name} GPIO {pin} erreichbar (Wert: {v}).", name, pin, value);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug("{name} GPIO {pin} nicht erreichbar: {msg}", name, pin, ex.Message);
+                return false;
+            }
         }
     }
 }
