@@ -49,6 +49,8 @@ Die einfache PCB-Variante fuer den Grundbetrieb des Gateways.
 | **4-Pin LED** | RGB+W oder 4x Einzel-LEDs: Power, VPN, WAN, Error |
 | **2x PWM-Ausgang** | Steuerbare PWM-Ausgaenge (z.B. fuer Luefter, Dimmer) |
 | **Touch-Sensor** | Kapazitiver Touch-Button fuer Interaktion ohne Taster |
+| **BTN1** | Taster 1 – GPIO 5, Pin 29 (Modus-Wechsel / Master-Key) |
+| **BTN2** | Taster 2 – GPIO 6, Pin 31 (PIR Toggle / Standby) |
 | **5V-Ausgang** | Geregelter 5V-Pin fuer externe Komponenten |
 | **Reset-Taster** | Hardware-Reset ohne SSH-Zugang |
 | **Formfaktor** | HAT-kompatibel (65 x 56 mm), passt in Standard-Hut-Gehaeuse |
