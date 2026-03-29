@@ -40,6 +40,8 @@ Enthaelt alle Features des **PCB Simple**, plus die unten aufgefuehrten Erweiter
 |---|---|---|---|---|
 | GPIO 2 (SDA) | 3 | I2C SDA | I/O | Display (SSD1306 / LCD) |
 | GPIO 3 (SCL) | 5 | I2C SCL + Reset | I/O | Display + Reset-Taster (shared) |
+| **GPIO 5** | **29** | **BTN1** | **Input (Pull-up)** | **Taster 1 – Kurz: Naechster Modus (zyklisch) \| Lang 3s: Master-Key** |
+| **GPIO 6** | **31** | **BTN2** | **Input (Pull-up)** | **Taster 2 – Kurz: PIR Toggle \| Lang 3s: Standby** |
 | GPIO 8 (CE0) | 24 | SPI CS | Output | RFID RC522 Chip Select |
 | GPIO 9 (MISO) | 21 | SPI MISO | Input | RFID Daten empfangen |
 | GPIO 10 (MOSI) | 19 | SPI MOSI | Output | RFID Daten senden |
