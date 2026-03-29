@@ -1,108 +1,145 @@
-# AweomaPi – C# Hardware Controller
+# AweomaPi — C# Hardware Controller
 
-.NET 8 Programm fuer den Raspberry Pi. Steuert alle Hardware-Komponenten des AWEOMA PCBs und prueft beim Start automatisch welche Sensoren vorhanden sind.
-
----
+Der C#-Controller steuert alle PCB-Komponenten des AWEOMA Pi Gateways.
+Er erkennt beim Start automatisch die verbaute Hardware und aktiviert nur die vorhandenen Services.
 
 ## Projektstruktur
 
 ```
 src/AweomaPi/
-|-- Program.cs                    # Einstiegspunkt – Hardware-Detection + Haupt-Loop
-|-- AweomaPi.csproj               # .NET 8 Projekt-Datei
-|-- Hardware/
-|   |-- GpioPins.cs               # Zentrale GPIO-Pin-Definitionen (BCM)
-|   +-- HardwareDetector.cs       # Erkennt aktive Sensoren (I2C, SPI, GPIO)
-+-- Services/
-    |-- DisplayService.cs         # SSD1306 OLED – Touch navigiert Seiten
-    |-- LedService.cs             # 4 Status-LEDs (Power, VPN, WAN, Error)
-    |-- RfidService.cs            # RC522 RFID-Reader (SPI) – nur Extended
-    +-- PirService.cs             # HC-SR501 PIR-Bewegungsmelder – nur Extended
+├── Hardware/
+│   ├── GpioPins.cs          # GPIO-Pin-Definitionen (LEDs, PWM, Touch, BTN1, BTN2, RFID, PIR)
+│   └── HardwareDetector.cs  # Automatische Hardware-Erkennung beim Start
+├── Services/
+│   ├── LedService.cs        # 4-Pin LED-Steuerung (Power/VPN/WAN/Error) + Helligkeit + Blink
+│   ├── DisplayService.cs    # SSD1306 OLED + Touch-Sensor (Display-Navigation)
+│   ├── RfidService.cs       # RC522 RFID-Karten-Erkennung (nur PCB Extended)
+│   ├── PirService.cs        # HC-SR501 Bewegungsmelder (nur PCB Extended)
+│   ├── ModeService.cs       # Betriebsmodi-Verwaltung (Normal/Minimal/Night/Standby/MasterKey/PIR)
+│   └── ButtonService.cs     # BTN1 (GPIO 5) + BTN2 (GPIO 6) mit Kurzklick/Langklick/Kombo
+├── Program.cs               # Einstiegspunkt: Hardware-Detection + Service-Init + Hauptschleife
+└── AweomaPi.csproj
 ```
 
----
+## GPIO-Pins Uebersicht
+
+| Funktion | GPIO | Physischer Pin | PCB |
+|---|---|---|---|
+| LED Power (gruen) | 17 | Pin 11 | Simple + Extended |
+| LED VPN (blau) | 22 | Pin 15 | Simple + Extended |
+| LED WAN (gelb) | 23 | Pin 16 | Simple + Extended |
+| LED Error (rot) | 27 | Pin 13 | Simple + Extended |
+| PWM Kanal 1 | 12 | Pin 32 | Simple + Extended |
+| PWM Kanal 2 | 13 | Pin 33 | Simple + Extended |
+| Touch (TTP223) | 24 | Pin 18 | Simple + Extended |
+| **BTN1** | **5** | **Pin 29** | **Simple + Extended** |
+| **BTN2** | **6** | **Pin 31** | **Simple + Extended** |
+| RFID CE (RC522) | 8 | Pin 24 | Extended |
+| RFID Reset | 25 | Pin 22 | Extended |
+| PIR (HC-SR501) | 25 | Pin 22 | Extended |
+| OLED SDA | 2 | Pin 3 | Extended |
+| OLED SCL | 3 | Pin 5 | Extended |
+
+## Buttons
+
+### BTN1 — GPIO 5, Physischer Pin 29
+
+| Aktion | Funktion |
+|---|---|
+| Kurz druecken | Naechster Modus (zyklisch: Normal→Minimal→Night→Standby→Normal) |
+| Lang halten 3s | Master-Key Modus aktivieren (schaltet einmalig durch alle Modi) |
+
+### BTN2 — GPIO 6, Physischer Pin 31
+
+| Aktion | Funktion |
+|---|---|
+| Kurz druecken | PIR Naehrungssensor an/aus toggle |
+| Lang halten 3s | Standby — alles aus (Pi laeuft im Hintergrund weiter) |
+
+### Beide Buttons gleichzeitig
+
+| Aktion | Funktion | LED-Feedback |
+|---|---|---|
+| 2x kurz zusammen | Reboot | 3x gelb (WAN-LED) blinken |
+| 3x kurz zusammen | Shutdown | 3x rot (Error-LED) blinken |
+
+## Die 6 Betriebsmodi
+
+| Modus | Anzeige | Trigger |
+|---|---|---|
+| Normal | Alles an — Display + LCD + LEDs + Luefter auto | Karte 1 / BTN1 kurz |
+| Minimal | Nur LCD + LEDs, grosses Display aus | Karte 2 / BTN1 kurz |
+| Night | Nur LEDs gedimmt 10%, LCD + Display aus | Karte 3 / BTN1 kurz |
+| Standby | Alles aus, Pi laeuft nur noch im Hintergrund | Karte 4 / BTN2 lang 3s |
+| Master Key | Schaltet einmalig durch alle Modi der Reihe nach | Master-Karte / BTN1 lang 3s |
+| PIR Auto | Display/LEDs folgen Bewegungssensor automatisch | Automatisch aktiv wenn PIR an |
+
+### PIR-Logik (Modus PIR Auto)
+
+| Zustand | Aktion |
+|---|---|
+| Bewegung erkannt | Display + LEDs einschalten |
+| Keine Bewegung 5 min | Display + LEDs in Standby |
+| PIR deaktiviert (BTN2) | Display + LEDs immer an |
 
 ## Hardware-Erkennung beim Start
 
-Das Programm prueft beim Start automatisch welche Komponenten vorhanden sind:
+Beim Start prueft `HardwareDetector` automatisch welche Hardware vorhanden ist:
 
-| Sensor/Modul | Methode | Ergebnis |
+| Hardware | Erkennungs-Methode | GPIO/Bus |
 |---|---|---|
-| OLED SSD1306 | I2C-Bus 1, Adresse 0x3C, ACK-Pruefung | PCB Extended erkannt |
-| RFID RC522 | SPI Bus 0, Version-Register 0x37 lesen | PCB Extended erkannt |
-| PIR HC-SR501 | GPIO 25 als Input oeffnen | PCB Extended erkannt |
-| Touch TTP223 | GPIO 24 als Input oeffnen | Beide Varianten |
-| LEDs (4x) | GPIO 17/22/23/27 als Output | Beide Varianten |
-| PWM (2x) | GPIO 12 als Output | Beide Varianten |
+| OLED SSD1306 | I2C-Probe auf Adresse 0x3C | I2C Bus 1 |
+| RFID RC522 | SPI-Probe: Version-Register 0x37 lesen | SPI0 CE0 |
+| PIR HC-SR501 | GPIO 25 oeffnen ohne Exception | GPIO 25 |
+| Touch TTP223 | GPIO 24 oeffnen ohne Exception | GPIO 24 |
+| BTN1 | GPIO 5 oeffnen ohne Exception | GPIO 5 |
+| BTN2 | GPIO 6 oeffnen ohne Exception | GPIO 6 |
 
-Daraus wird die **PCB-Variante** abgeleitet:
-- Mindestens einer der Extended-Sensoren erkannt → `PcbVariant.Extended`
-- Kein Extended-Sensor → `PcbVariant.Simple`
+**PCB-Variante wird abgeleitet:**
+- OLED, RFID oder PIR gefunden → **Extended**
+- Sonst → **Simple**
 
-Nicht verfuegbare Sensoren werden **still deaktiviert** – kein Absturz, kein Fehler.
+## Beispiel-Startausgabe
 
----
-
-## Touch-Sensor: Display-Steuerung
-
-Der TTP223 Touch-Sensor (GPIO 24) steuert das OLED-Display:
-
-- **Kurzer Touch** → naechste Display-Seite (blaettern)
-- **Langer Touch** (>2s) → Display an/aus
-
-### Display-Seiten
-
-| Seite | Inhalt |
-|---|---|
-| 0 | Gateway-Name, IP, VPN-Status, Pi-hole |
-| 1 | CPU-Last, CPU-Temperatur |
-| 2 (nur Extended) | RFID letzter Tag, PIR-Status |
-
----
-
-## Voraussetzungen
-
-### System
-
-```bash
-# .NET 8 auf dem Pi installieren
-curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --channel 8.0
-export PATH=$PATH:$HOME/.dotnet
-
-# I2C und SPI aktivieren (fuer PCB Extended)
-sudo raspi-config
-# -> Interfaces -> I2C -> Enable
-# -> Interfaces -> SPI -> Enable
+```
+=== AWEOMA Pi Gateway startet ===
+Version: 1.0.0 | Datum: 2026-03-29 08:00
+--- Hardware-Erkennung ---
+PCB-Variante : Extended
+Display (OLED): GEFUNDEN (0x3C)
+RFID (RC522)  : GEFUNDEN
+PIR (HC-SR501): GEFUNDEN
+Touch (TTP223): GEFUNDEN
+BTN1 (GPIO 5) : GEFUNDEN
+BTN2 (GPIO 6) : GEFUNDEN
+--------------------------
+[LED] 4 Status-LEDs initialisiert (Power/VPN/WAN/Error).
+[DISPLAY] SSD1306 OLED initialisiert. Touch-Wakeup aktiv (GPIO 24).
+[PIR] HC-SR501 initialisiert auf GPIO 25. Timeout: 5min.
+[RFID] RC522 initialisiert auf SPI0.
+ButtonService: BTN1 (GPIO 5) und BTN2 (GPIO 6) initialisiert.
+=== AWEOMA Gateway bereit ===
+BTN1 kurz = naechster Modus | BTN1 3s = Master-Key
+BTN2 kurz = PIR toggle      | BTN2 3s = Standby
+Beide 2x  = Reboot          | Beide 3x = Shutdown
 ```
 
-### NuGet-Pakete (werden automatisch geladen)
-
-| Paket | Zweck |
-|---|---|
-| System.Device.Gpio | GPIO, I2C, SPI Zugriff |
-| Iot.Device.Bindings | SSD1306, MFRC522, etc. |
-| Microsoft.Extensions.Hosting | Logging, DI |
-
----
-
-## Build & Run
+## Build & Deployment
 
 ```bash
-# Im Repository-Root
+# Bauen
 cd src/AweomaPi
-
-# Build
 dotnet build
 
-# Direkt ausfuehren (root fuer GPIO-Zugriff)
+# Direkt ausfuehren (als root fuer GPIO-Zugriff)
 sudo dotnet run
 
-# Als Release bauen und deployen
-dotnet publish -c Release -r linux-arm64 --self-contained
-sudo ./bin/Release/net8.0/linux-arm64/publish/AweomaPi
-```
+# Release-Build fuer Raspberry Pi
+dotnet publish -c Release -r linux-arm64 --self-contained true
 
----
+# Binaer liegt unter:
+# bin/Release/net8.0/linux-arm64/publish/AweomaPi
+```
 
 ## Systemd-Service (Autostart)
 
@@ -110,15 +147,15 @@ sudo ./bin/Release/net8.0/linux-arm64/publish/AweomaPi
 # /etc/systemd/system/aweoma-pi.service
 [Unit]
 Description=AWEOMA Pi Hardware Controller
-After=network.target wg-quick@wg0.service
+After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/aweoma/src/AweomaPi
-ExecStart=/opt/aweoma/src/AweomaPi/bin/Release/net8.0/linux-arm64/publish/AweomaPi
+WorkingDirectory=/opt/aweoma
+ExecStart=/opt/aweoma/AweomaPi
 Restart=always
-RestartSec=10
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -127,41 +164,12 @@ WantedBy=multi-user.target
 ```bash
 sudo systemctl enable aweoma-pi
 sudo systemctl start aweoma-pi
-sudo journalctl -u aweoma-pi -f   # Logs live ansehen
+sudo journalctl -fu aweoma-pi
 ```
 
----
+## Abhaengigkeiten
 
-## Beispiel-Ausgabe beim Start
-
-```
-  ╔══════════════════════════════════════╗
-  ║   AWEOMA – Raspberry Pi Gateway      ║
-  ║   Hardware Controller v1.0           ║
-  ╚══════════════════════════════════════╝
-
-[INFO] Schritt 1/3 – Hardware-Erkennung...
-[INFO] [I2C] OLED-Display (SSD1306) erkannt auf Bus 1, Adresse 0x3C
-[INFO] [SPI] RFID RC522 erkannt (Version: 0x92)
-[INFO] [GPIO] PIR HC-SR501 erkannt auf Pin BCM 25
-[INFO] [GPIO] Touch TTP223 (Display) erkannt auf Pin BCM 24
-[INFO] [GPIO] LEDs: 4/4 Pins erreichbar
-[INFO] [GPIO] PWM-Pins erkannt (GPIO 12, 13)
-[INFO] === Hardware-Profil: PCB: Extended | LEDs=True | PWM=True | Touch(Display)=True | OLED=True | RFID=True | PIR=True ===
-
-  PCB-Variante : Extended
-  LEDs (4x)    : ✓ erkannt
-  PWM (2x)     : ✓ erkannt
-  Touch/Display: ✓ erkannt
-  OLED-Display : ✓ erkannt
-  RFID RC522   : ✓ erkannt
-  PIR HC-SR501 : ✓ erkannt
-
-[INFO] Schritt 2/3 – Services starten...
-[INFO] [LED] 4 Status-LEDs initialisiert.
-[INFO] [Display] SSD1306 initialisiert (128x64, I2C).
-[INFO] [Display] Touch-Sensor aktiv (GPIO 24) – steuert Display-Seiten.
-[INFO] [RFID] RC522 bereit. Warte auf Tags...
-[INFO] [PIR] HC-SR501 aktiv auf GPIO 25. Hinweis: 30s Aufwaermzeit benoetigt.
-[INFO] Schritt 3/3 – Haupt-Loop gestartet. [Ctrl+C zum Beenden]
-```
+- .NET 8.0 (Raspberry Pi OS 64-bit)
+- `System.Device.Gpio` — GPIO/I2C/SPI-Zugriff
+- `Iot.Device.Bindings` — SSD1306, RC522 Treiber
+- `Microsoft.Extensions.Logging` — Logging
